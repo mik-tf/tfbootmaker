@@ -1,6 +1,45 @@
 #!/bin/bash
 
-# Script to format a USB drive and make it bootable with iPXE for ThreeFold Grid
+# Get script information dynamically
+SCRIPT_NAME=$(basename "$0")
+INSTALL_NAME="${SCRIPT_NAME%.*}"  # Removes the .sh extension if it exists
+DISPLAY_NAME="${INSTALL_NAME^^}"  # Convert to uppercase for display
+REPO_URL="https://github.com/threefoldtech/${INSTALL_NAME}"
+
+# Function to install the script
+install() {
+    echo
+    echo "Installing ${DISPLAY_NAME}..."
+    if sudo -v; then
+        sudo cp "$0" "/usr/local/bin/${INSTALL_NAME}"
+        sudo chown root:root "/usr/local/bin/${INSTALL_NAME}"
+        sudo chmod 755 "/usr/local/bin/${INSTALL_NAME}"
+
+        echo
+        echo "${DISPLAY_NAME} has been installed successfully."
+        echo "You can now use ${INSTALL_NAME} command from anywhere."
+        echo
+        echo "Use ${INSTALL_NAME} help to see the commands."
+        echo
+    else
+        echo "Error: Failed to obtain sudo privileges. Installation aborted."
+        exit 1
+    fi
+}
+
+# Function to uninstall the script
+uninstall() {
+    echo
+    echo "Uninstalling ${DISPLAY_NAME}..."
+    if sudo -v; then
+        sudo rm -f "/usr/local/bin/${INSTALL_NAME}"
+        echo "${DISPLAY_NAME} has been uninstalled successfully."
+        echo
+    else
+        echo "Error: Failed to obtain sudo privileges. Uninstallation aborted."
+        exit 1
+    fi
+}
 
 # Function to handle exit consistently
 handle_exit() {
@@ -13,15 +52,17 @@ show_help() {
     cat << EOF
     
 ==========================
-THREEFOLD V3 ZOS BOOTMAKER
+${DISPLAY_NAME}
 ==========================
 
 This Bash CLI script can format a USB drive with FAT32 and installs an iPXE bootloader to boot a ThreeFold Grid V3 node.
 
-The ZOS bootstrap image format is EFI FILE for UEFI.
+Commands:
+  help        Display this help message
+  install     Install the script system-wide
+  uninstall   Remove the script from the system
 
-Options:
-  help        Display this help message.
+The ZOS bootstrap image format is EFI FILE for UEFI.
 
 Steps:
 1. Prompts for a path to unmount (optional).
@@ -40,8 +81,15 @@ Steps:
 14. Optionally ejects the USB drive.
 
 Example:
-  $0
-  $0 help
+  ${INSTALL_NAME}
+  ${INSTALL_NAME} help
+  ${INSTALL_NAME} install
+  ${INSTALL_NAME} uninstall
+
+Reference: ${REPO_URL}
+
+License: Apache 2.0
+
 EOF
 }
 
@@ -129,11 +177,28 @@ ask_and_unmount() {
     done
 }
 
-# Check if help is requested
-if [[ "$1" == "help" ]]; then
-    show_help
-    exit 0
-fi
+# Check for arguments
+case "$1" in
+    "help")
+        show_help
+        exit 0
+        ;;
+    "install")
+        install
+        exit 0
+        ;;
+    "uninstall")
+        uninstall
+        exit 0
+        ;;
+    "")
+        # Continue with normal execution
+        ;;
+    *)
+        echo "Invalid argument. Use '${INSTALL_NAME} help' to see available commands."
+        exit 1
+        ;;
+esac
 
 # Display initial disk layout
 show_lsblk
