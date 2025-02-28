@@ -6,6 +6,16 @@ INSTALL_NAME="${SCRIPT_NAME%.*}"  # Removes the .sh extension if it exists
 DISPLAY_NAME="${INSTALL_NAME^^}"  # Convert to uppercase for display
 REPO_URL="https://github.com/threefoldtech/${INSTALL_NAME}"
 
+# Display welcome message
+display_welcome() {
+    echo
+    echo "Welcome to ${DISPLAY_NAME}"
+    echo
+    echo "This utility helps you create a bootable ThreeFold Zero-OS USB drive."
+    echo "It will download and write a bootstrap image to your USB device."
+    echo
+}
+
 # Function to install the script
 install() {
     echo
@@ -55,30 +65,21 @@ show_help() {
 ${DISPLAY_NAME}
 ==========================
 
-This Bash CLI script can format a USB drive with FAT32 and installs an iPXE bootloader to boot a ThreeFold Grid V3 node.
+This Bash CLI script downloads and copies a ThreeFold Zero-OS bootstrap image to a USB drive to boot a ThreeFold Grid V3 node.
 
 Commands:
   help        Display this help message
   install     Install the script system-wide
   uninstall   Remove the script from the system
 
-The ZOS bootstrap image format is EFI FILE for UEFI.
-
 Steps:
-1. Prompts for a path to unmount (optional).
-2. Prompts for the disk to format (e.g., /dev/sdb).  Must be a valid device.
-3. Prompts for the network (mainnet, devnet, testnet, qanet).
+1. Displays the current disk layout.
+2. Shows only removable drives and prompts for selection.
+3. Prompts for the network (1=mainnet, 2=testnet, 3=qanet, 4=devnet).
 4. Prompts for the farm ID.
-5. Displays the current disk layout.
-6. Confirms the formatting operation.
-7. Formats the disk with FAT32.
-8. Creates a temporary mount point.
-9. Mounts the formatted disk.
-10. Downloads the iPXE bootloader from the ThreeFold Grid bootstrap server.
-11. Copies the iPXE bootloader to the correct location on the USB drive.
-12. Unmounts the temporary mount point.
-13. Displays the final disk layout.
-14. Optionally ejects the USB drive.
+5. Confirms the operation.
+6. Downloads and directly writes the bootstrap image to the disk.
+7. Optionally ejects the USB drive.
 
 Example:
   ${INSTALL_NAME}
@@ -93,41 +94,11 @@ License: Apache 2.0
 EOF
 }
 
-# Function to display lsblk and allow exit
-show_lsblk() {
-    echo
-    echo "Current disk layout:"
-    echo
-    lsblk
-    echo
-    echo "This is your current disk layout. Consider this before proceeding."
-    echo
-
-    while true; do
-        read -p "Press Enter to continue, or type 'exit' to quit: " response
-        case "${response,,}" in  # Convert to lowercase
-            exit ) handle_exit;;
-            "" ) break;;  # Empty input (Enter key) continues
-            * ) echo "Invalid input. Please press Enter or type 'exit'.";;
-        esac
-    done
-}
-
-# Function to display mounted contents
-show_mounted_contents() {
-    if [[ -d "$temp_mount" ]]; then
-        echo
-        echo "Contents of the mounted disk ($temp_mount):"
-        echo
-        if command -v tree &> /dev/null; then
-            tree "$temp_mount"
-        else
-            ls -lR "$temp_mount"
-        fi
-        echo
-    else
-        echo "Error: Temporary mount point not found."
-    fi
+# Function to get USB/removable drives
+get_removable_drives() {
+    # Filter out drives with size 0 (likely ejected)
+    lsblk --output NAME,SIZE,MODEL,HOTPLUG --nodeps | grep "1$" | 
+    awk '!/0B/ {print "/dev/"$1}'  # Exclude entries with 0B size
 }
 
 # Function to get user confirmation
@@ -139,38 +110,6 @@ get_confirmation() {
         case "${response,,}" in
             y ) return 0;;
             n ) return 1;;
-            exit ) handle_exit;;
-            * ) echo "Please answer 'y', 'n', or 'exit'.";;
-        esac
-    done
-}
-
-# Function to get user input with exit option
-get_input() {
-    local prompt="$1"
-    read -p "$prompt (or type 'exit'): " input
-    case "${input,,}" in
-        exit ) handle_exit;;
-        * ) echo "$input";;
-    esac
-}
-
-# Function to handle unmounting
-ask_and_unmount() {
-    while true; do
-        read -p "Do you want to unmount a disk? (y/n/exit): " response
-        case "${response,,}" in
-            y ) 
-                unmount_path=$(get_input "Enter the path to unmount (e.g., /mnt/usb)")
-                if [[ -n "$unmount_path" ]]; then
-                    echo "Unmounting $unmount_path..."
-                    sudo umount -- "$unmount_path" || {
-                        umount_result=$?
-                        echo "Error unmounting $unmount_path (exit code: $umount_result)"
-                    }
-                fi
-                break ;;
-            n ) break;;
             exit ) handle_exit;;
             * ) echo "Please answer 'y', 'n', or 'exit'.";;
         esac
@@ -192,7 +131,8 @@ case "$1" in
         exit 0
         ;;
     "")
-        # Continue with normal execution
+        # Show welcome message and continue with normal execution
+        display_welcome
         ;;
     *)
         echo "Invalid argument. Use '${INSTALL_NAME} help' to see available commands."
@@ -200,116 +140,115 @@ case "$1" in
         ;;
 esac
 
-# Display initial disk layout
-show_lsblk
-
-# Ask if the user wants to unmount and perform unmount if yes
-ask_and_unmount
-
-# Get disk to format (with validation and exit option)
+# Get disk to write image to (with validation and exit option)
 while true; do
-    read -p "Enter the disk to format (e.g., /dev/sdb) (or type 'exit'): " disk_to_format
-    case "${disk_to_format,,}" in
+    echo "Available removable drives:"
+    removable_drives=($(get_removable_drives))
+    
+    if [ ${#removable_drives[@]} -eq 0 ]; then
+        echo "No removable drives found. Please insert a USB drive and try again."
+        if ! get_confirmation "Would you like to rescan for drives?"; then
+            handle_exit
+        fi
+        continue
+    fi
+    
+    # Display available drives with numbers
+    for i in "${!removable_drives[@]}"; do
+        drive="${removable_drives[$i]}"
+        drive_info=$(lsblk --output SIZE,MODEL --nodeps "${drive}" | tail -n 1)
+        echo "$((i+1)). ${drive} - ${drive_info}"
+    done
+    
+    echo
+    echo "Type 'exit' to quit at any time"
+    echo
+    read -p "Enter the number of the drive to use: " drive_selection
+    
+    if [[ "${drive_selection,,}" == "exit" ]]; then
+        handle_exit
+    elif [[ "$drive_selection" =~ ^[0-9]+$ ]] && [ "$drive_selection" -le "${#removable_drives[@]}" ] && [ "$drive_selection" -gt 0 ]; then
+        disk_to_format="${removable_drives[$((drive_selection-1))]}"
+        echo
+        echo "You selected: $disk_to_format"
+        echo
+        echo "Disk information:"
+        lsblk -o NAME,SIZE,TYPE,MODEL "$disk_to_format"
+        echo
+        if get_confirmation "Is this the correct USB device you want to use?"; then
+            break
+        fi
+    else
+        echo
+        echo "Invalid selection. Please try again."
+        echo
+    fi
+done
+
+# Get network selection with simplified numbered options
+echo "Select the network:"
+echo "1 = mainnet"
+echo "2 = testnet"
+echo "3 = qanet"
+echo "4 = devnet"
+
+while true; do
+    read -p "Enter your choice (1-4) (or type 'exit'): " network_choice
+    case "${network_choice,,}" in
         exit) handle_exit;;
-        *)
-            if [[ "$disk_to_format" =~ ^/dev/sd[b-z]$ ]] && [[ -b "$disk_to_format" ]]; then
-                break
-            else
-                echo "Error: Invalid disk format or device does not exist. Please enter /dev/sdX (e.g., /dev/sdb)."
-            fi
-            ;;
+        1) network_part="prod"; network_name="mainnet"; break;;
+        2) network_part="test"; network_name="testnet"; break;;
+        3) network_part="qa"; network_name="qanet"; break;;
+        4) network_part="dev"; network_name="devnet"; break;;
+        *) echo "Invalid choice. Please enter a number between 1 and 4.";;
     esac
 done
 
-# Get network and farm ID (with validation and exit option)
-while true; do
-    read -p "Enter the network (mainnet, devnet, testnet, qanet) (or type 'exit'): " network
-    case "${network,,}" in
-        mainnet) network_part="prod"; break;;
-        devnet) network_part="dev"; break;;
-        testnet) network_part="test"; break;;
-        qanet) network_part="qa"; break;;
-        exit) handle_exit;;
-        *) echo "Invalid network. Please enter mainnet, devnet, testnet, or qanet.";;
-    esac
-done
 while true; do
     read -p "Enter the farm ID (positive integer, or type 'exit'): " farm_id
     case "${farm_id,,}" in  # Convert to lowercase for case-insensitive matching
-        exit) handle_exit "Exiting at user request.";;
+        exit) handle_exit;;
         *[!0-9]*)  # Check for any non-digit characters
             echo "Invalid farm ID. Please enter a positive integer or 'exit'."
             ;;
-        *) # If it's all digits, it's considered valid
+        0)  # Explicitly reject zero
+            echo "Farm ID cannot be zero. Please enter a positive integer (1 or higher)."
+            ;;
+        *)  # If it's all digits and not zero, it's considered valid
             break
             ;;
     esac
 done
 
-ipxe_url="https://bootstrap.grid.tf/uefi/${network_part}/${farm_id}"
+bootstrap_url="https://v3.bootstrap.grid.tf/uefimg/${network_part}/${farm_id}"
 
 echo
-echo "The URL to download the bootstrap image is the following: $ipxe_url"
+echo "Selected network: ${network_name}"
+echo "Farm ID: ${farm_id}"
+echo "The bootstrap URL is: $bootstrap_url"
 echo
 
-# Confirm formatting
-if ! get_confirmation "Are you sure you want to format $disk_to_format? This will ERASE ALL DATA"; then
+# Confirm writing to disk
+if ! get_confirmation "Are you sure you want to write the bootstrap image to $disk_to_format? This will ERASE ALL DATA"; then
     echo
     echo "Operation cancelled."
     echo
     exit 0
 fi
 
-# Format the disk with FAT32
+# Download and write directly to disk with curl and pipe
 echo
-echo "Formatting $disk_to_format with VFAT -I..."
+echo "Downloading and writing bootstrap image to $disk_to_format..."
 echo
-sudo mkfs.vfat -I "$disk_to_format" || {
-    echo "Error formatting disk"
+curl -L "$bootstrap_url" | sudo tee "$disk_to_format" > /dev/null
+
+if [ $? -ne 0 ]; then
+    echo "Error downloading or writing bootstrap image"
     exit 1
-}
+fi
 
-# Create temporary mount point
-temp_mount="/mnt/temp_usb"
-sudo mkdir -p "$temp_mount"
-
-# Mount the newly formatted disk
 echo
-echo "Mounting formatted disk..."
-echo
-sudo mount "$disk_to_format" "$temp_mount" || {
-    echo "Error mounting formatted disk"
-    exit 1
-}
-
-# Create EFI/BOOT directory and copy file
-echo
-echo "Creating EFI boot directory..."
-echo
-sudo mkdir -p "$temp_mount/EFI/BOOT"
-
-# Download and rename the iPXE file
-echo
-echo "Downloading iPXE file from $ipxe_url..."
-echo
-sudo curl -L "$ipxe_url" -o "$temp_mount/EFI/BOOT/BOOTX64.EFI" || {
-    echo "Error downloading iPXE file"
-    sudo umount "$temp_mount"
-    exit 1
-}
-
-# Show the contents of the mounted disk before unmounting
-show_mounted_contents 
-
-# Unmount the temporary mount point
-echo
-echo "Unmounting temporary mount point..."
-echo
-sudo umount "$temp_mount"
-
-# State the success of the operation
-echo
-echo "The ZOS bootstrap image has been copied to the USB key."
+echo "Bootstrap image has been successfully written to $disk_to_format."
 echo
 
 # Ask about ejecting
@@ -325,5 +264,5 @@ if get_confirmation "Do you want to eject the disk?"; then
 fi
 
 echo
-echo "Operation completed."
+echo "Operation completed successfully."
 echo
